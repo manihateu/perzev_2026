@@ -1,0 +1,6 @@
+﻿  sorting_algorithms.cpp
+F:\cpp_projects\PERZEV\PERZEV\sorting_algorithms.cpp(12,15): warning C4267: инициализация: преобразование из "size_t" в "int"; возможна потеря данных
+F:\cpp_projects\PERZEV\PERZEV\sorting_algorithms.cpp(36,11): warning C4267: инициализация: преобразование из "size_t" в "int"; возможна потеря данных
+F:\cpp_projects\PERZEV\PERZEV\sorting_algorithms.cpp(192,11): warning C4267: инициализация: преобразование из "size_t" в "int"; возможна потеря данных
+F:\cpp_projects\PERZEV\PERZEV\sorting_algorithms.cpp(316,11): warning C4267: инициализация: преобразование из "size_t" в "int"; возможна потеря данных
+  PERZEV.vcxproj -> F:\cpp_projects\PERZEV\x64\Debug\PERZEV.exe
