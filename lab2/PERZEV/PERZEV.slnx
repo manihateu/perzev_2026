@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="PERZEV/PERZEV.vcxproj" />
+  <Project Path="PERZEV/PERZEV.vcxproj" Id="97c6f76e-7106-41a0-a55e-f2a88d7d67c4" />
 </Solution>
