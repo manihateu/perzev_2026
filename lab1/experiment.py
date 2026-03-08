@@ -1,399 +1,362 @@
 """
-Скрипт для проведения численных экспериментов по умножению матриц.
+Модуль для проведения численных экспериментов по умножению матриц
 """
 
 import numpy as np
 import time
-import json
 import csv
+import json
+from typing import List, Dict, Tuple
 from matrix_multiply import (
-    matrix_multiply_naive,
-    matrix_multiply_parallel_linearized
+    fill_matrix_divide_conquer,
+    multiply_matrices_parallel,
+    multiply_matrices_sequential,
+    multiply_matrices_linearized_v1,
+    multiply_matrices_linearized_v2,
+    multiply_matrices_linearized_v3,
+    verify_result
 )
 from multiprocessing import cpu_count
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 
 
-def generate_matrices(n):
-    """Генерация двух случайных матриц размерности n x n."""
-    np.random.seed(42)  # Для воспроизводимости результатов
-    A = np.random.rand(n, n).astype(np.float32)
-    B = np.random.rand(n, n).astype(np.float32)
-    return A, B
-
-
-def measure_time(func, *args, **kwargs):
-    """Измерение времени выполнения функции."""
+def measure_time(func, *args, **kwargs) -> Tuple[float, any]:
+    """
+    Измерение времени выполнения функции
+    
+    Returns:
+        (время в секундах, результат функции)
+    """
     start = time.perf_counter()
     result = func(*args, **kwargs)
     end = time.perf_counter()
-    return end - start, result
+    return (end - start), result
 
 
-def experiment_varying_threads():
-    """Эксперимент: зависимость времени от количества потоков."""
-    print("=" * 60)
-    print("Эксперимент 1: Зависимость от количества потоков")
-    print("=" * 60)
+def experiment_threads_dependency():
+    """
+    Эксперимент 1: Зависимость скорости от количества потоков
+    """
+    print("=" * 80)
+    print("Эксперимент 1: Зависимость скорости от количества потоков")
+    print("=" * 80)
+    print()
     
-    # Размеры матриц для тестирования
-    sizes = [10, 50, 100, 200, 500, 1000]
-    max_threads = min(cpu_count(), 8)  # Ограничиваем до 8 потоков
-    thread_counts = [1, 2, 4, max_threads]
+    # Размеры матриц для тестирования (от 10 до 10000 с шагом)
+    # Для больших размеров (>10000) эксперименты могут занять много времени
+    sizes = [10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    max_threads = cpu_count()
+    thread_counts = [1, 2, 4, 8]
+    if max_threads > 8:
+        thread_counts.append(max_threads)
     
     results = []
     
     for size in sizes:
-        print(f"\nРазмер матрицы: {size}x{size}")
-        A, B = generate_matrices(size)
+        print(f"\nРазмер матрицы: {size} x {size}")
+        print("-" * 80)
         
-        # Проверка корректности с помощью numpy
-        reference = matrix_multiply_naive(A, B)
+        # Генерируем матрицы
+        print("Генерация матриц...")
+        A = fill_matrix_divide_conquer(size)
+        B = fill_matrix_divide_conquer(size, seed=100)
+        
+        baseline_time = None
         
         for num_threads in thread_counts:
             if num_threads > size:
                 continue
             
+            # Выполняем несколько прогонов для усреднения
             times = []
-            for _ in range(3):  # 3 прогона для усреднения
-                elapsed, result = measure_time(
-                    matrix_multiply_parallel_linearized,
-                    A, B, num_threads=num_threads, linearization='ikj'
+            for run in range(3):
+                elapsed, C = measure_time(
+                    multiply_matrices_parallel, A, B, num_threads
                 )
                 times.append(elapsed)
+                
+                # Проверяем корректность
+                if not verify_result(A, B, C):
+                    print(f"  ОШИБКА: Неверный результат для {num_threads} потоков!")
             
             avg_time = np.mean(times)
-            std_time = np.std(times)
             
-            # Проверка корректности
-            error = np.abs(result - reference).max()
+            if num_threads == 1:
+                baseline_time = avg_time
             
-            result_entry = {
+            speedup = baseline_time / avg_time if baseline_time else 1.0
+            
+            print(f"  {num_threads:2d} потоков: {avg_time:10.6f} с, "
+                  f"ускорение: {speedup:6.2f}x")
+            
+            results.append({
                 'size': size,
                 'threads': num_threads,
                 'time': avg_time,
-                'std': std_time,
-                'error': error
-            }
-            results.append(result_entry)
-            
-            print(f"  Потоков: {num_threads:2d}, Время: {avg_time:.6f}±{std_time:.6f} сек, Ошибка: {error:.2e}")
+                'speedup': speedup
+            })
     
+    # Сохраняем результаты
+    with open('results_threads.csv', 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['size', 'threads', 'time', 'speedup'])
+        writer.writeheader()
+        writer.writerows(results)
+    
+    print("\nРезультаты сохранены в results_threads.csv")
     return results
 
 
-def experiment_varying_sizes():
-    """Эксперимент: зависимость времени от размера матрицы."""
-    print("\n" + "=" * 60)
-    print("Эксперимент 2: Зависимость от размера матрицы")
-    print("=" * 60)
+def experiment_size_dependency():
+    """
+    Эксперимент 2: Зависимость скорости от размерности матрицы
+    """
+    print("\n\n" + "=" * 80)
+    print("Эксперимент 2: Зависимость скорости от размерности матрицы")
+    print("=" * 80)
+    print()
     
-    # Используем логарифмическую шкалу для размеров от 10 до 100000
-    # Но ограничиваем максимальный размер в зависимости от доступной памяти
-    sizes = []
+    # Размеры матриц от 10 до 10000 (с шагом)
+    # Можно расширить до 100000, но это займет очень много времени
+    sizes = [10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    num_threads = cpu_count()
     
-    # Малые размеры
-    sizes.extend([10, 20, 50, 100])
-    
-    # Средние размеры
-    sizes.extend([200, 500, 1000, 2000])
-    
-    # Большие размеры (если позволяет память)
-    try:
-        # Проверяем доступную память, пробуя создать тестовую матрицу
-        test_size = 5000
-        test_matrix = np.random.rand(test_size, test_size).astype(np.float32)
-        del test_matrix
-        sizes.extend([5000, 10000])
-    except MemoryError:
-        print("  Предупреждение: ограниченная память, пропускаем большие размеры")
-    
-    try:
-        test_size = 20000
-        test_matrix = np.random.rand(test_size, test_size).astype(np.float32)
-        del test_matrix
-        sizes.extend([20000, 50000])
-    except MemoryError:
-        pass
-    
-    try:
-        test_size = 100000
-        test_matrix = np.random.rand(test_size, test_size).astype(np.float32)
-        del test_matrix
-        sizes.append(100000)
-    except MemoryError:
-        pass
-    
-    sizes = sorted(set(sizes))
-    num_threads = min(cpu_count(), 4)
     results = []
     
     for size in sizes:
-        print(f"\nРазмер матрицы: {size}x{size}")
-        try:
-            A, B = generate_matrices(size)
-            
-            # Для больших матриц делаем меньше прогонов
-            num_runs = 3 if size <= 1000 else 1
-            
-            times = []
-            for _ in range(num_runs):
-                elapsed, _ = measure_time(
-                    matrix_multiply_parallel_linearized,
-                    A, B, num_threads=num_threads, linearization='ikj'
-                )
-                times.append(elapsed)
-            
-            avg_time = np.mean(times)
-            std_time = np.std(times) if len(times) > 1 else 0.0
-            
-            result_entry = {
-                'size': size,
-                'threads': num_threads,
-                'time': avg_time,
-                'std': std_time
-            }
-            results.append(result_entry)
-            
-            print(f"  Время: {avg_time:.6f}±{std_time:.6f} сек")
-            
-            # Освобождаем память
-            del A, B
-        except MemoryError:
-            print(f"  Пропущено из-за нехватки памяти")
-            break
-        except Exception as e:
-            print(f"  Ошибка: {e}")
-            break
+        print(f"Размер матрицы: {size} x {size}")
+        
+        # Генерируем матрицы
+        A = fill_matrix_divide_conquer(size)
+        B = fill_matrix_divide_conquer(size, seed=100)
+        
+        # Последовательная версия
+        elapsed_seq, C_seq = measure_time(multiply_matrices_sequential, A, B)
+        if not verify_result(A, B, C_seq):
+            print("  ОШИБКА: Неверный результат последовательной версии!")
+        
+        # Параллельная версия
+        elapsed_par, C_par = measure_time(
+            multiply_matrices_parallel, A, B, num_threads
+        )
+        if not verify_result(A, B, C_par):
+            print("  ОШИБКА: Неверный результат параллельной версии!")
+        
+        speedup = elapsed_seq / elapsed_par
+        
+        print(f"  Последовательная: {elapsed_seq:10.6f} с")
+        print(f"  Параллельная ({num_threads} потоков): {elapsed_par:10.6f} с, "
+              f"ускорение: {speedup:6.2f}x")
+        print()
+        
+        results.append({
+            'size': size,
+            'sequential_time': elapsed_seq,
+            'parallel_time': elapsed_par,
+            'speedup': speedup,
+            'threads': num_threads
+        })
     
+    # Сохраняем результаты
+    with open('results_size.csv', 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['size', 'sequential_time', 
+                                                'parallel_time', 'speedup', 'threads'])
+        writer.writeheader()
+        writer.writerows(results)
+    
+    print("Результаты сохранены в results_size.csv")
     return results
 
 
 def experiment_linearization():
-    """Эксперимент: сравнение различных вариантов линеаризации циклов."""
-    print("\n" + "=" * 60)
+    """
+    Эксперимент 3: Сравнение вариантов линеаризации циклов
+    """
+    print("\n\n" + "=" * 80)
     print("Эксперимент 3: Сравнение вариантов линеаризации циклов")
-    print("=" * 60)
+    print("=" * 80)
+    print()
     
     sizes = [10, 50, 100, 200, 500, 1000]
-    linearizations = ['ijk', 'ikj', 'jik', 'jki', 'kij', 'kji']
-    num_threads = min(cpu_count(), 4)
+    variants = {
+        'Стандартный': multiply_matrices_sequential,
+        'Линеаризация v1 (i,k,j)': multiply_matrices_linearized_v1,
+        'Линеаризация v2 (k,i,j)': multiply_matrices_linearized_v2,
+        'Линеаризация v3 (j,i,k)': multiply_matrices_linearized_v3,
+    }
     
     results = []
     
     for size in sizes:
-        print(f"\nРазмер матрицы: {size}x{size}")
-        A, B = generate_matrices(size)
-        reference = matrix_multiply_naive(A, B)
+        print(f"\nРазмер матрицы: {size} x {size}")
+        print("-" * 80)
         
-        best_time = float('inf')
-        best_linearization = None
+        A = fill_matrix_divide_conquer(size)
+        B = fill_matrix_divide_conquer(size, seed=100)
         
-        for lin in linearizations:
+        variant_times = {}
+        
+        for variant_name, variant_func in variants.items():
             times = []
-            for _ in range(3):
-                elapsed, result = measure_time(
-                    matrix_multiply_parallel_linearized,
-                    A, B, num_threads=num_threads, linearization=lin
-                )
+            for run in range(3):
+                elapsed, C = measure_time(variant_func, A, B)
                 times.append(elapsed)
+                
+                if not verify_result(A, B, C):
+                    print(f"  ОШИБКА: {variant_name} - неверный результат!")
             
             avg_time = np.mean(times)
-            std_time = np.std(times)
-            error = np.abs(result - reference).max()
+            variant_times[variant_name] = avg_time
             
-            if avg_time < best_time:
-                best_time = avg_time
-                best_linearization = lin
+            print(f"  {variant_name:30s}: {avg_time:10.6f} с")
             
-            result_entry = {
+            results.append({
                 'size': size,
-                'linearization': lin,
-                'time': avg_time,
-                'std': std_time,
-                'error': error
-            }
-            results.append(result_entry)
-            
-            print(f"  {lin}: {avg_time:.6f}±{std_time:.6f} сек, Ошибка: {error:.2e}")
+                'variant': variant_name,
+                'time': avg_time
+            })
         
-        print(f"  Лучший вариант: {best_linearization} ({best_time:.6f} сек)")
+        # Находим оптимальный вариант
+        best = min(variant_times.items(), key=lambda x: x[1])
+        print(f"  Лучший вариант: {best[0]} ({best[1]:.6f} с)")
     
+    # Сохраняем результаты
+    with open('results_linearization.csv', 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['size', 'variant', 'time'])
+        writer.writeheader()
+        writer.writerows(results)
+    
+    print("\nРезультаты сохранены в results_linearization.csv")
     return results
 
 
-def fit_formula(results_threads, results_sizes):
-    """Подбор формулы для оценки времени выполнения."""
-    print("\n" + "=" * 60)
-    print("Анализ результатов и вывод формулы")
-    print("=" * 60)
+def derive_formula(results_threads: List[Dict], results_size: List[Dict]):
+    """
+    Вывод формулы для оценки скорости выполнения
     
-    # Анализ зависимости от размера
-    sizes = np.array([r['size'] for r in results_sizes])
-    times = np.array([r['time'] for r in results_sizes])
+    Пытаемся найти зависимость: T(n, p) = f(n, p)
+    где n - размерность матрицы, p - количество потоков
+    """
+    print("\n\n" + "=" * 80)
+    print("Вывод формулы для оценки скорости выполнения")
+    print("=" * 80)
+    print()
     
-    # Логарифмическая регрессия: time = a * size^b
-    log_sizes = np.log(sizes)
-    log_times = np.log(times)
+    # Подготовка данных
+    sizes = sorted(set(r['size'] for r in results_threads))
+    threads = sorted(set(r['threads'] for r in results_threads))
     
-    # Линейная регрессия в логарифмическом масштабе
-    coeffs = np.polyfit(log_sizes, log_times, 1)
-    b = coeffs[0]  # Степень
-    log_a = coeffs[1]
-    a = np.exp(log_a)
-    
-    # Вычисляем R² для оценки качества аппроксимации
-    predicted_log_times = np.polyval(coeffs, log_sizes)
-    ss_res = np.sum((log_times - predicted_log_times) ** 2)
-    ss_tot = np.sum((log_times - np.mean(log_times)) ** 2)
-    r_squared = 1 - (ss_res / ss_tot)
-    
-    print(f"\nЗависимость от размера матрицы:")
-    print(f"  Время ≈ {a:.2e} * N^{b:.2f}")
-    print(f"  (где N - размерность матрицы)")
-    print(f"  Качество аппроксимации (R²): {r_squared:.4f}")
-    
-    # Анализ зависимости от количества потоков
-    thread_data = {}
+    # Создаем матрицу данных: время[sizes][threads]
+    time_matrix = {}
     for r in results_threads:
         size = r['size']
-        if size not in thread_data:
-            thread_data[size] = []
-        thread_data[size].append((r['threads'], r['time']))
+        thread = r['threads']
+        if size not in time_matrix:
+            time_matrix[size] = {}
+        time_matrix[size][thread] = r['time']
     
-    print(f"\nЗависимость от количества потоков:")
-    efficiency_data = []
+    # Попытка найти формулу T(n, p) = a * n^b / p^c
+    # Логарифмируем: log(T) = log(a) + b*log(n) - c*log(p)
     
-    for size in sorted(thread_data.keys())[-3:]:  # Показываем для 3 наибольших размеров
-        data = sorted(thread_data[size])
-        threads = [t for t, _ in data]
-        times = [t for _, t in data]
-        
-        # Ускорение относительно 1 потока
-        base_time = times[0]
-        speedups = [base_time / t for t in times]
-        efficiencies = [sp / th for sp, th in zip(speedups, threads)]
-        
-        print(f"  Размер {size}x{size}:")
-        for th, sp, eff in zip(threads, speedups, efficiencies):
-            print(f"    {th} потоков: ускорение {sp:.2f}x, эффективность {eff:.2f}")
-            efficiency_data.append((size, th, sp, eff))
+    print("Попытка аппроксимации формулой: T(n, p) = a * n^b / p^c")
+    print()
     
-    # Подбор функции ускорения от количества потоков
-    if efficiency_data:
-        # Анализируем эффективность для разных размеров
-        avg_efficiency = {}
-        for size, th, sp, eff in efficiency_data:
-            if th not in avg_efficiency:
-                avg_efficiency[th] = []
-            avg_efficiency[th].append(eff)
-        
-        print(f"\nСредняя эффективность использования потоков:")
-        for th in sorted(avg_efficiency.keys()):
-            avg_eff = np.mean(avg_efficiency[th])
-            print(f"  {th} потоков: {avg_eff:.2f}")
-        
-        # Подбор формулы для функции ускорения
-        # Обычно ускорение имеет вид: speedup = P^α, где α < 1
-        thread_counts = sorted(avg_efficiency.keys())
-        if len(thread_counts) > 1:
-            # Используем средние ускорения для подбора
-            avg_speedups = {}
-            for size, th, sp, eff in efficiency_data:
-                if th not in avg_speedups:
-                    avg_speedups[th] = []
-                avg_speedups[th].append(sp)
-            
-            if len(avg_speedups) > 1:
-                log_threads = np.log(thread_counts[1:])  # Пропускаем 1 поток
-                log_speedups = [np.log(np.mean(avg_speedups[th])) for th in thread_counts[1:]]
-                
-                if len(log_threads) > 0:
-                    alpha_coeffs = np.polyfit(log_threads, log_speedups, 1)
-                    alpha = alpha_coeffs[0]
-                    
-                    print(f"\nФункция ускорения от количества потоков:")
-                    print(f"  speedup(P) ≈ P^{alpha:.3f}")
+    # Подготовка данных для регрессии
+    n_values = []
+    p_values = []
+    t_values = []
     
-    # Общая формула
-    print(f"\n" + "=" * 60)
-    print(f"ОБЩАЯ ФОРМУЛА ОЦЕНКИ ВРЕМЕНИ ВЫПОЛНЕНИЯ:")
-    print(f"=" * 60)
-    print(f"  T(N, P) ≈ {a:.2e} * N^{b:.2f} / P^α")
-    print(f"  где:")
-    print(f"    N - размерность матрицы")
-    print(f"    P - количество потоков")
-    print(f"    α - коэффициент эффективности параллелизации (обычно 0.6-0.9)")
-    print(f"")
-    print(f"  Альтернативная форма:")
-    print(f"    T(N, P) ≈ {a:.2e} * N^{b:.2f} * P^(-α)")
-    print(f"=" * 60)
+    for size in sizes:
+        for thread in threads:
+            if size in time_matrix and thread in time_matrix[size]:
+                n_values.append(size)
+                p_values.append(thread)
+                t_values.append(time_matrix[size][thread])
     
-    return {
-        'a': float(a),
-        'b': float(b),
-        'r_squared': float(r_squared),
-        'formula_size': f"{a:.2e} * N^{b:.2f}",
-        'formula_full': f"{a:.2e} * N^{b:.2f} / P^α"
+    n_arr = np.array(n_values)
+    p_arr = np.array(p_values)
+    t_arr = np.array(t_values)
+    
+    # Логарифмическая регрессия
+    log_n = np.log(n_arr)
+    log_p = np.log(p_arr)
+    log_t = np.log(t_arr)
+    
+    # Линейная регрессия: log(T) = log(a) + b*log(n) - c*log(p)
+    # Используем метод наименьших квадратов
+    A = np.vstack([np.ones(len(log_n)), log_n, -log_p]).T
+    coeffs = np.linalg.lstsq(A, log_t, rcond=None)[0]
+    
+    log_a = coeffs[0]
+    b = coeffs[1]
+    c = coeffs[2]
+    a = np.exp(log_a)
+    
+    print(f"Найденные коэффициенты:")
+    print(f"  a = {a:.6e}")
+    print(f"  b = {b:.4f}")
+    print(f"  c = {c:.4f}")
+    print()
+    print(f"Формула: T(n, p) = {a:.6e} * n^{b:.4f} / p^{c:.4f}")
+    print()
+    
+    # Вычисляем R²
+    t_pred = a * (n_arr ** b) / (p_arr ** c)
+    ss_res = np.sum((t_arr - t_pred) ** 2)
+    ss_tot = np.sum((t_arr - np.mean(t_arr)) ** 2)
+    r_squared = 1 - (ss_res / ss_tot)
+    
+    print(f"Качество аппроксимации (R²): {r_squared:.4f}")
+    print()
+    
+    # Сохраняем формулу
+    formula_data = {
+        'formula': f'T(n, p) = {a:.6e} * n^{b:.4f} / p^{c:.4f}',
+        'coefficients': {
+            'a': float(a),
+            'b': float(b),
+            'c': float(c)
+        },
+        'r_squared': float(r_squared)
     }
-
-
-def save_results(results_threads, results_sizes, results_linearization, formula):
-    """Сохранение результатов в файлы."""
-    # Сохранение в JSON
-    with open('lab1/results.json', 'w', encoding='utf-8') as f:
-        json.dump({
-            'threads_experiment': results_threads,
-            'sizes_experiment': results_sizes,
-            'linearization_experiment': results_linearization,
-            'formula': formula
-        }, f, indent=2, ensure_ascii=False)
     
-    # Сохранение в CSV для удобного анализа
-    with open('lab1/results_threads.csv', 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['size', 'threads', 'time', 'std', 'error'])
-        writer.writeheader()
-        writer.writerows(results_threads)
+    with open('formula.json', 'w') as f:
+        json.dump(formula_data, f, indent=2)
     
-    with open('lab1/results_sizes.csv', 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['size', 'threads', 'time', 'std'])
-        writer.writeheader()
-        writer.writerows(results_sizes)
+    print("Формула сохранена в formula.json")
     
-    with open('lab1/results_linearization.csv', 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['size', 'linearization', 'time', 'std', 'error'])
-        writer.writeheader()
-        writer.writerows(results_linearization)
-    
-    print("\nРезультаты сохранены в:")
-    print("  - lab1/results.json")
-    print("  - lab1/results_threads.csv")
-    print("  - lab1/results_sizes.csv")
-    print("  - lab1/results_linearization.csv")
+    return formula_data
 
 
 def main():
-    """Основная функция для запуска всех экспериментов."""
-    print("Начало численных экспериментов по умножению матриц")
-    print(f"Количество доступных ядер CPU: {cpu_count()}")
+    """
+    Главная функция для запуска всех экспериментов
+    """
+    print("Численные эксперименты по параллельному умножению матриц")
+    print(f"Доступно ядер CPU: {cpu_count()}")
+    print()
     
     # Эксперимент 1: Зависимость от количества потоков
-    results_threads = experiment_varying_threads()
+    results_threads = experiment_threads_dependency()
     
-    # Эксперимент 2: Зависимость от размера матрицы
-    results_sizes = experiment_varying_sizes()
+    # Эксперимент 2: Зависимость от размерности
+    results_size = experiment_size_dependency()
     
-    # Эксперимент 3: Сравнение линеаризаций
+    # Эксперимент 3: Линеаризация циклов
     results_linearization = experiment_linearization()
     
-    # Анализ и вывод формулы
-    formula = fit_formula(results_threads, results_sizes)
+    # Вывод формулы
+    formula = derive_formula(results_threads, results_size)
     
-    # Сохранение результатов
-    save_results(results_threads, results_sizes, results_linearization, formula)
-    
-    print("\n" + "=" * 60)
-    print("Эксперименты завершены!")
-    print("=" * 60)
+    print("\n" + "=" * 80)
+    print("Все эксперименты завершены!")
+    print("=" * 80)
+    print()
+    print("Созданные файлы:")
+    print("  - results_threads.csv - зависимость от количества потоков")
+    print("  - results_size.csv - зависимость от размерности")
+    print("  - results_linearization.csv - сравнение линеаризаций")
+    print("  - formula.json - формула для оценки времени выполнения")
 
 
 if __name__ == '__main__':
